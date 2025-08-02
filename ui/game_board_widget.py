@@ -10,7 +10,9 @@ class GameBoardWidget(QWidget):
     def __init__(self, maze_logic, parent=None):
         super().__init__(parent)
         self.maze_logic = maze_logic # Referenz zur Spiellogik
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) # Ermöglicht das Empfangen von Tastatureingaben
+        # Das FocusPolicy wird jetzt von MainWindow gesteuert, je nachdem, ob AI spielt
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
+        print(f"DEBUG: GameBoardWidget __init__: Initial FocusPolicy = {self.focusPolicy()}") # NEU: Debug-Print
 
         self.images = {} # Dictionary zum Speichern der geladenen Bilder
         self.load_images() # Lade alle benötigten Bilder beim Start
@@ -20,14 +22,13 @@ class GameBoardWidget(QWidget):
         self.maze_logic.maze_updated.connect(self.update)
 
         # Zuordnung von Labyrinthzeichen zu Bild-Dateinamen
-        # Dies ist eine initiale Zuordnung und kann später erweitert werden.
         self.char_to_image_map = {
             'W': 'brickwall.png', # Wand
             ' ': None,            # Leerer Pfad (wird nur als weiße Fläche gezeichnet)
             'S': 'car.png',       # Startpunkt / Spieler
             'E': 'door.png',      # Endpunkt / Tür
 
-            # Platzhalter für Schlüssel und Enten (werden später aktiv genutzt)
+            # Schlüssel und Enten
             'U': 'key-ruby.png',
             'A': 'key-saphire.png',
             'I': 'key-diamond.png',
@@ -45,8 +46,6 @@ class GameBoardWidget(QWidget):
         """
         image_dir = "assets/images"
         
-        # Liste aller Bilddateien, die geladen werden sollen.
-        # Diese Liste sollte alle Bilder enthalten, die in char_to_image_map verwendet werden.
         image_files = [
             'brickwall.png', 'car.png', 'door.png',
             'key-diamond.png', 'key-saphire.png', 'key-ruby.png',
@@ -60,9 +59,9 @@ class GameBoardWidget(QWidget):
                 if not pixmap.isNull():
                     self.images[filename] = pixmap
                 else:
-                    print(f"DEBUG: Bild konnte nicht geladen werden oder ist leer: {filepath}")
+                    print(f"Bild konnte nicht geladen werden oder ist leer: {filepath}")
             else:
-                print(f"DEBUG: Bilddatei nicht gefunden: {filepath}")
+                print(f"Bilddatei nicht gefunden: {filepath}")
 
     def paintEvent(self, event):
         """
@@ -111,11 +110,16 @@ class GameBoardWidget(QWidget):
         """
         Behandelt Tastatureingaben für die Spielerbewegung.
         """
-        # Wenn das Spiel vorbei ist, ignoriere Tastatureingaben
-        if self.maze_logic.is_game_over():
+        print(f"DEBUG: keyPressEvent triggered! Key: {event.key()} (is_ai_controlled: {self.maze_logic.is_ai_controlled})") # NEU: Debug-Print
+        
+        if self.maze_logic.is_ai_controlled:
+            print("DEBUG: KI-Steuerung aktiv, Tastatureingabe ignoriert.")
             return
 
-        # Rufe die move_player-Methode in MazeLogic auf, basierend auf der gedrückten Taste
+        if self.maze_logic.is_game_over():
+            print("DEBUG: Spiel vorbei, Tastatureingabe ignoriert.")
+            return
+
         if event.key() == Qt.Key.Key_W:
             self.maze_logic.move_player(0, -1) # Hoch
         elif event.key() == Qt.Key.Key_S:
@@ -125,5 +129,11 @@ class GameBoardWidget(QWidget):
         elif event.key() == Qt.Key.Key_D:
             self.maze_logic.move_player(1, 0)  # Rechts
         else:
-            # Standardbehandlung für andere Tasten, die nicht relevant sind
             super().keyPressEvent(event)
+
+    def focusInEvent(self, event):
+        """
+        Wird aufgerufen, wenn das Widget den Fokus erhält.
+        """
+        print("DEBUG: GameBoardWidget hat den Fokus erhalten.")
+        super().focusInEvent(event)

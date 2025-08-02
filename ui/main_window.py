@@ -8,15 +8,16 @@ from PyQt6.QtWidgets import (
     QMainWindow, QVBoxLayout, QWidget, QPushButton, QHBoxLayout, QLabel,
     QInputDialog, QMessageBox, QComboBox, QStackedWidget,
     QDialog, QLineEdit, QSpinBox, QDialogButtonBox, QFormLayout,
-    QTextBrowser, QTableWidget, QTableWidgetItem, QHeaderView # NEU: Für Highscore-Anzeige
+    QTextBrowser, QTableWidget, QTableWidgetItem, QHeaderView 
 )
 from PyQt6.QtCore import Qt, QTimer
-from datetime import datetime # NEU: Für Datum und Uhrzeit der Highscores
+from datetime import datetime 
 
 # Importiere die Logik- und Generator-Klassen
 from game.maze_logic import MazeLogic
 from ui.game_board_widget import GameBoardWidget
 from ui.maze_generator import MazeGenerator
+from ai.agent import Agent
 
 # --- Benutzerdefinierter Dialog für die Labyrinthgenerierung ---
 class MazeGenerationDialog(QDialog):
@@ -39,7 +40,7 @@ class MazeGenerationDialog(QDialog):
         # OK- und Abbrechen-Buttons
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.accept) # Verbindet OK mit accept()
-        self.buttons.rejected.connect(self.reject) # Verbindet Cancel mit reject()
+        self.buttons.rejected.connect(self.reject) # Verbindt Cancel mit reject()
 
         # Layout für den Dialog
         form_layout = QFormLayout()
@@ -74,6 +75,12 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.game_time_seconds = 0
 
+        # KI-Agent und KI-Timer
+        self.agent = Agent(self.maze_logic)
+        self.ai_timer = QTimer(self)
+        self.ai_timer.timeout.connect(self.ai_make_move)
+        self.ai_move_interval = 200 # Standard-Bewegungsintervall in ms (z.B. 200ms)
+
         # Initialisiere die Benutzeroberfläche (Startbildschirm und Spielbildschirm)
         self.init_ui()
         
@@ -91,7 +98,7 @@ class MainWindow(QMainWindow):
         # Erstelle die Hauptansichten und füge sie dem StackedWidget hinzu
         self.create_start_screen()
         self.create_game_screen()
-        self.create_highscores_screen() # NEU: Highscore-Bildschirm erstellen
+        self.create_highscores_screen()
 
         # Verbinde Signale von der Spiellogik mit den UI-Updates
         self.maze_logic.maze_updated.connect(self.game_board_widget.update)
@@ -124,9 +131,15 @@ class MainWindow(QMainWindow):
         map_selection_layout.addWidget(QLabel("Verfügbare Labyrinthe:"))
         map_selection_layout.addWidget(self.map_selector)
 
-        self.start_game_button = QPushButton("Labyrinth starten")
+        self.start_game_button = QPushButton("Labyrinth starten (Manuell)")
         self.start_game_button.clicked.connect(self.start_selected_maze_game) 
         map_selection_layout.addWidget(self.start_game_button)
+
+        # Button für AI-Spiel
+        self.start_ai_game_button = QPushButton("Labyrinth starten (KI)")
+        self.start_ai_game_button.clicked.connect(self.start_selected_maze_game_ai)
+        map_selection_layout.addWidget(self.start_ai_game_button)
+
         start_layout.addLayout(map_selection_layout)
 
         # Weitere Buttons auf dem Startbildschirm
@@ -135,8 +148,8 @@ class MainWindow(QMainWindow):
         start_layout.addWidget(self.generate_maze_button_start)
 
         self.highscores_button = QPushButton("Highscores anzeigen")
-        self.highscores_button.clicked.connect(self.show_highscores_screen) # NEU: Verbindung aktiviert
-        self.highscores_button.setEnabled(True) # NEU: Button aktivieren
+        self.highscores_button.clicked.connect(self.show_highscores_screen)
+        self.highscores_button.setEnabled(True)
         start_layout.addWidget(self.highscores_button)
 
         self.exit_button_start = QPushButton("Beenden")
@@ -244,7 +257,9 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.start_screen_widget)
         self.update_map_list() 
         self.timer.stop() # Stoppt den Timer, falls im Spiel gewesen
+        self.ai_timer.stop() # Stoppt den AI-Timer
         self.maze_logic.game_over = True # Setzt den Spielzustand zurück
+        self.maze_logic.is_ai_controlled = False # AI-Steuerung deaktivieren
         self.maze_logic.maze = [] # Leert das Labyrinth, damit das Spielfeld 'sauber' ist
         self.maze_logic.maze_updated.emit() # Signalisiert dem GameBoardWidget, sich zu aktualisieren (leeres Feld)
 
@@ -254,7 +269,8 @@ class MainWindow(QMainWindow):
         """
         print("Zeige Spielbildschirm an.")
         self.stacked_widget.setCurrentWidget(self.game_screen_widget)
-        self.game_board_widget.setFocus() # Setze den Fokus auf das Spielbrett, damit Tastatureingaben funktionieren
+        # Fokus wird in start_new_game oder start_ai_game gesetzt
+        # self.game_board_widget.setFocus() 
 
     def show_highscores_screen(self):
         """
@@ -286,15 +302,17 @@ class MainWindow(QMainWindow):
             self.map_selector.addItem("Keine Labyrinthe gefunden")
             self.map_selector.setEnabled(False)
             self.start_game_button.setEnabled(False)
+            self.start_ai_game_button.setEnabled(False)
         else:
             print(f"Gefundene Maps: {map_files}")
             self.map_selector.addItems(sorted(map_files))
             self.map_selector.setEnabled(True)
             self.start_game_button.setEnabled(True)
+            self.start_ai_game_button.setEnabled(True)
 
     def start_selected_maze_game(self):
         """
-        Startet ein ausgewähltes Labyrinth.
+        Startet ein ausgewähltes Labyrinth für manuelle Steuerung.
         """
         if self.map_selector.currentIndex() == 0: # Placeholder ausgewählt
             QMessageBox.warning(self, "Auswahl erforderlich", "Bitte wählen Sie ein Labyrinth aus der Liste, um das Spiel zu starten.")
@@ -303,20 +321,52 @@ class MainWindow(QMainWindow):
         selected_file = self.map_selector.currentText()
         filepath = os.path.join("assets", "maps", selected_file)
         
+        self.maze_logic.is_ai_controlled = False # Wichtig: AI-Steuerung deaktivieren
+        print(f"DEBUG: start_selected_maze_game: is_ai_controlled = {self.maze_logic.is_ai_controlled}")
         self.load_maze_and_start_game(filepath)
+
+    def start_selected_maze_game_ai(self):
+        """
+        Startet ein ausgewähltes Labyrinth für AI-Steuerung.
+        """
+        if self.map_selector.currentIndex() == 0: # Placeholder ausgewählt
+            QMessageBox.warning(self, "Auswahl erforderlich", "Bitte wählen Sie ein Labyrinth aus der Liste, um das Spiel mit der KI zu starten.")
+            return
+
+        selected_file = self.map_selector.currentText()
+        filepath = os.path.join("assets", "maps", selected_file)
+        
+        self.maze_logic.is_ai_controlled = True # Wichtig: AI-Steuerung aktivieren
+        print(f"DEBUG: start_selected_maze_game_ai: is_ai_controlled = {self.maze_logic.is_ai_controlled}")
+        self.load_maze_and_start_game(filepath)
+
 
     def load_maze_and_start_game(self, filepath):
         """
         Lädt eine Map und startet das Spiel.
         """
-        print(f"Lade Labyrinth: {filepath}")
+        print(f"DEBUG: load_maze_and_start_game: Beginn. is_ai_controlled = {self.maze_logic.is_ai_controlled}")
         if self.maze_logic.load_maze_from_file(filepath):
             print(f"Labyrinth '{filepath}' geladen. Spiel startet.")
             self.show_game_screen() # Wechselt zur Spielansicht
             self.start_new_game() # Startet die Spiel-Logik (Timer etc.)
+            
+            # Starte AI-Timer, wenn AI-gesteuert
+            if self.maze_logic.is_ai_controlled:
+                self.ai_timer.start(self.ai_move_interval)
+                self.game_board_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Deaktiviere Fokus für manuelle Eingabe
+                print("DEBUG: Fokus-Policy auf NoFocus gesetzt (KI-Steuerung).")
+            else:
+                self.ai_timer.stop() # Sicherstellen, dass der AI-Timer gestoppt ist
+                self.game_board_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus) # Aktiviere Fokus für manuelle Eingabe
+                self.game_board_widget.setFocus() # Setze Fokus für manuelle Steuerung
+                self.activateWindow() # Fenster aktivieren
+                self.raise_()         # Fenster in den Vordergrund bringen
+                print("DEBUG: Fokus-Policy auf StrongFocus gesetzt und Fokus gesetzt (manuelle Steuerung).")
+
         else:
             QMessageBox.critical(self, "Fehler", f"Konnte Labyrinth '{filepath}' nicht laden. Möglicherweise beschädigt oder ungültig.")
-            self.show_start_screen() # Bleibe auf dem Startbildschirm bei Fehler
+            self.show_start_screen()
 
 
     def generate_new_maze(self):
@@ -324,11 +374,11 @@ class MainWindow(QMainWindow):
         Öffnet einen benutzerdefinierten Dialog zur Eingabe von Dateinamen, Breite und Höhe
         und generiert dann das Labyrinth.
         """
-        dialog = MazeGenerationDialog(self) # Erstelle eine Instanz des neuen Dialogs
-        if dialog.exec() == QDialog.DialogCode.Accepted: # Zeige den Dialog an und warte auf OK
+        dialog = MazeGenerationDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             filename, width, height = dialog.get_inputs()
             
-            if not filename: # Wenn kein Dateiname eingegeben wurde
+            if not filename:
                 filename = f"generated_maze_{width}x{height}_{random.randint(1000, 9999)}"
                 QMessageBox.information(self, "Info", f"Kein Name eingegeben, speichere als: {filename}.map")
 
@@ -336,7 +386,7 @@ class MainWindow(QMainWindow):
             
             self.generate_new_maze_with_size_and_load(width, height, save_path=final_maze_path)
         else:
-            print("Labyrinthgenerierung abgebrochen.") # Benutzer hat auf Abbrechen geklickt
+            print("Labyrinthgenerierung abgebrochen.")
 
 
     def generate_new_maze_with_size_and_load(self, width, height, save_path=None):
@@ -356,14 +406,13 @@ class MainWindow(QMainWindow):
                     row_str = "".join(row)
                     f.write(row_str + "\n")
             print(f"Erfolgreich Labyrinth nach {save_path} geschrieben.")
-            self.update_map_list() # Aktualisiert die Liste in der ComboBox
+            self.update_map_list()
             
-            # KEINE automatische Ladefunktion mehr, stattdessen zum Startbildschirm zurückkehren
             self.show_start_screen() 
 
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Fehler beim Speichern des Labyrinths: {e}")
-            self.show_start_screen() # Zurück zum Startbildschirm bei Fehler
+            self.show_start_screen()
             return
         
     def load_maze_from_dialog(self):
@@ -380,13 +429,37 @@ class MainWindow(QMainWindow):
         """
         print("Starte neues Spiel.")
         self.game_time_seconds = 0
-        self.timer.start(1000) # Startet den Timer jede Sekunde
-        self.update_timer() # Initialisiert die Zeitanzeige
-        self.update_key_display() # Aktualisiert die Schlüsselanzeige
-        self.update_reward_display() # Aktualisiert die Enten-/Belohnungsanzeige
-        self.score_label.setText(f"Punkte: {self.maze_logic.get_current_score()}") # Aktualisiert den Punktestand
-        self.game_board_widget.setFocus() # Setzt den Fokus auf das Spielbrett für Tastatureingaben
-        self.maze_logic.maze_updated.emit() # Zwingt das GameBoardWidget zur Aktualisierung
+        self.timer.start(1000)
+        self.update_timer()
+        self.update_key_display()
+        self.update_reward_display()
+        self.score_label.setText(f"Punkte: {self.maze_logic.get_current_score()}")
+        self.maze_logic.maze_updated.emit()
+
+
+    def ai_make_move(self):
+        """
+        Lässt den KI-Agenten einen Zug machen.
+        Wird vom ai_timer aufgerufen.
+        """
+        print(f"DEBUG: ai_make_move called. is_game_over: {self.maze_logic.is_game_over()}, is_ai_controlled: {self.maze_logic.is_ai_controlled}")
+        if self.maze_logic.is_game_over():
+            self.ai_timer.stop()
+            print("DEBUG: AI Timer gestoppt, Spiel vorbei.")
+            return
+
+        # Nur erlauben, dass die KI einen Zug macht, wenn sie explizit KI-gesteuert ist
+        if not self.maze_logic.is_ai_controlled:
+            print("DEBUG: AI-Timer läuft, aber Spiel ist nicht KI-gesteuert. Stoppe AI-Timer.")
+            self.ai_timer.stop()
+            return
+
+        move_vector = self.agent.choose_action()
+        if move_vector:
+            dx, dy = move_vector
+            self.maze_logic.move_player(dx, dy)
+        else:
+            print("KI konnte keinen gültigen Zug wählen.")
 
 
     def update_key_display(self):
@@ -462,7 +535,6 @@ class MainWindow(QMainWindow):
                 for line in f:
                     parts = line.strip().split('|')
                     if len(parts) == 6:
-                        # Datum_Uhrzeit|MapName|Score|AngepassteZeit|Rohzeit|Zeitbonus
                         try:
                             date_time_str = parts[0]
                             score = int(parts[2])
@@ -494,10 +566,9 @@ class MainWindow(QMainWindow):
         self.highscores_table.setRowCount(len(scores_data))
         for row_idx, entry in enumerate(scores_data):
             self.highscores_table.setItem(row_idx, 0, QTableWidgetItem(entry['datetime']))
-            self.highscores_table.setItem(row_idx, 1, QTableWidgetItem(entry['map_name'].replace('.map', ''))) # Map-Name ohne .map
+            self.highscores_table.setItem(row_idx, 1, QTableWidgetItem(entry['map_name'].replace('.map', '')))
             self.highscores_table.setItem(row_idx, 2, QTableWidgetItem(str(entry['score'])))
             
-            # Zeitformatierung (min:sek)
             minutes = entry['final_time'] // 60
             seconds = entry['final_time'] % 60
             self.highscores_table.setItem(row_idx, 3, QTableWidgetItem(f"{minutes:02d}:{seconds:02d}"))
@@ -507,20 +578,20 @@ class MainWindow(QMainWindow):
 
     def handle_game_won(self):
         """Wird aufgerufen, wenn das Spiel gewonnen wurde, zeigt eine Nachricht an und setzt das Spiel zurück."""
-        self.timer.stop() # Stoppt den Timer
+        self.timer.stop()
+        self.ai_timer.stop()
+        
         final_score = self.maze_logic.get_current_score()
         time_bonus = self.maze_logic.get_end_time_bonus()
-        raw_time_seconds = self.game_time_seconds # Die Zeit, die tatsächlich im Spiel vergangen ist
+        raw_time_seconds = self.game_time_seconds
 
-        # Speichere den Highscore, bevor das Spiel zurückgesetzt wird
         selected_map_file = self.map_selector.currentText()
         if selected_map_file != "Wähle ein Labyrinth..." and selected_map_file != "Keine Labyrinthe gefunden":
             self.save_highscore(selected_map_file, final_score, raw_time_seconds, time_bonus)
 
-
         final_time_seconds = raw_time_seconds - time_bonus
         if final_time_seconds < 0:
-            final_time_seconds = 0 # Zeit kann nicht negativ sein
+            final_time_seconds = 0
 
         final_minutes = final_time_seconds // 60
         final_seconds = final_time_seconds % 60
@@ -537,7 +608,9 @@ class MainWindow(QMainWindow):
 
     def handle_game_lost(self):
         """Wird aufgerufen, wenn das Spiel verloren wurde (Punktestand unter -100)."""
-        self.timer.stop() # Stoppt den Timer
+        self.timer.stop()
+        self.ai_timer.stop()
+        
         final_score = self.maze_logic.get_current_score()
         QMessageBox.information(self, "Spiel verloren!",
                                 f"Dein Punktestand ist unter {self.maze_logic.LOSS_THRESHOLD} gefallen!\n"

@@ -35,6 +35,7 @@ class MazeLogic(QObject):
         self.end_time_bonus = 0 # Zeitbonus durch gesammelte Enten
         self.current_score = self.STARTING_SCORE # Aktueller Punktestand, initialisiert mit Startpunkten
         self.required_exit_key = None # Der Schlüssel, der zum Öffnen der Tür benötigt wird
+        self.is_ai_controlled = False # Flag, ob das Spiel von der KI gesteuert wird
 
         # Definition der Enten-Typen und ihrer Werte
         self.duck_types = {
@@ -65,7 +66,6 @@ class MazeLogic(QObject):
         try:
             with open(filepath, 'r') as f:
                 for line_idx, line in enumerate(f):
-                    # KORREKTUR: rstrip('\n') statt strip(), um Leerzeichen am Zeilenende zu erhalten
                     stripped_line = line.rstrip('\n') 
                     if stripped_line:
                         temp_maze.append(list(stripped_line))
@@ -258,11 +258,11 @@ class MazeLogic(QObject):
         if self.game_over:
             return
 
-        new_x, new_y = self.player_pos['x'] + dx, self.player_pos['y'] + dy
+        old_x, old_y = self.player_pos['x'], self.player_pos['y'] # Speichere alte Position
+        new_x, new_y = old_x + dx, old_y + dy # Berechne neue Position
 
         # Prüfe Grenzen des Labyrinths
         if not (0 <= new_x < len(self.maze[0]) and 0 <= new_y < len(self.maze)):
-            # Wenn außerhalb der Grenzen, keine Bewegung, aber auch keine Punktabzüge für Wand
             return
 
         target_cell = self.maze[new_y][new_x]
@@ -279,9 +279,19 @@ class MazeLogic(QObject):
         # Gültige Bewegung: Punkteabzug pro Schritt
         self.current_score -= self.STEP_PENALTY
 
+        # Aktualisiere das Labyrinth-Gitter: alte Position leeren, neue Position markieren
+        # WICHTIG: Überschreibe die alte Position nur, wenn sie nicht der Startpunkt ist
+        # oder wenn der Startpunkt nicht mehr der aktuelle Spieler ist.
+        # Da der Spieler immer das 'S' ist, wird die alte Position zu einem leeren Feld.
+        self.maze[old_y][old_x] = ' ' 
+        
         # Spielerposition aktualisieren
         self.player_pos['x'] = new_x
         self.player_pos['y'] = new_y
+
+        # Setze die neue Spielerposition im Labyrinth-Gitter
+        self.maze[new_y][new_x] = 'S'
+
 
         if target_cell == 'E': # Ende erreicht
             # Überprüfe, ob der ZIEL-Schlüssel gesammelt wurde
@@ -294,18 +304,19 @@ class MazeLogic(QObject):
                 QMessageBox.information(None, "Ende erreicht", 
                                         f"Du brauchst den '{self.required_exit_key.replace('key-', '').capitalize()}' Schlüssel, um die Tür zu öffnen!")
 
-        # Prüfe, ob ein Schlüssel gesammelt wurde
+        # Prüfe, ob ein Schlüssel gesammelt wurde (dies muss NACH der Spielerbewegung erfolgen,
+        # damit der Schlüssel auf der Zelle, die der Spieler betritt, erkannt wird)
         key_chars = {data['char']: name for name, data in self.key_types.items()}
         if target_cell in key_chars:
             collected_key_name = key_chars[target_cell]
             if collected_key_name not in self.collected_keys: # Nur sammeln, wenn noch nicht gesammelt
                 self.collected_keys.add(collected_key_name)
                 self.current_score += self.KEY_BONUS # Punktebonus für Schlüssel
-                self.maze[new_y][new_x] = ' ' # Schlüssel vom Feld entfernen
+                # Der Schlüssel wird durch die Spielerposition überschrieben, daher keine separate Löschung hier
                 self.keys_changed.emit(len(self.collected_keys)) # UI aktualisieren
                 print(f"Schlüssel {collected_key_name} gesammelt. Insgesamt: {len(self.collected_keys)}")
 
-        # Prüfe, ob eine Ente gesammelt wurde
+        # Prüfe, ob eine Ente gesammelt wurde (dies muss NACH der Spielerbewegung erfolgen)
         duck_chars = {data['char']: name for name, data in self.duck_types.items()}
         if target_cell in duck_chars:
             collected_duck_name = duck_chars[target_cell]
@@ -314,7 +325,7 @@ class MazeLogic(QObject):
             self.current_score += duck_data['points'] # Punkte hinzufügen
             self.end_time_bonus += duck_data['time_bonus'] # Zeitbonus hinzufügen
             self.collected_ducks += 1 # Anzahl der gesammelten Enten erhöhen
-            self.maze[new_y][new_x] = ' ' # Ente vom Feld entfernen
+            # Die Ente wird durch die Spielerposition überschrieben, daher keine separate Löschung hier
             self.ducks_changed.emit(self.collected_ducks) # UI aktualisieren
             print(f"Ente gesammelt: {collected_duck_name}. Punkte: {self.current_score}, Zeitbonus: {self.end_time_bonus}s")
 
@@ -331,6 +342,10 @@ class MazeLogic(QObject):
 
     def get_player_pos(self):
         """Gibt die aktuelle Spielerposition zurück."""
+        # Da die Spielerposition jetzt im Maze-Gitter selbst als 'S' ist,
+        # könnten wir diese Methode anpassen, um die 'S'-Position zu finden.
+        # Für die aktuelle Implementierung, die self.player_pos verwendet,
+        # ist dies jedoch weiterhin korrekt.
         return self.player_pos
 
     def get_collected_keys_count(self):
@@ -356,3 +371,7 @@ class MazeLogic(QObject):
     def is_game_over(self):
         """Prüft, ob das Spiel beendet ist."""
         return self.game_over
+
+    def get_is_ai_controlled(self):
+        """Gibt zurück, ob das Spiel von der KI gesteuert wird."""
+        return self.is_ai_controlled
