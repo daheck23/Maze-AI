@@ -30,5 +30,5 @@ Game over -100pts
 Libraries used: 
 - Numpy
 - Torch
-- PyQr6
+- PyQt6
 
