@@ -4,7 +4,7 @@
 import os
 import random
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtWidgets import QMessageBox # Für Meldungen im Spiel
+from PyQt6.QtWidgets import QMessageBox # Für Meldungen im Spiel (wird nur noch für Spielende verwendet)
 
 class MazeLogic(QObject):
     # Signale, die von der Logik an die Benutzeroberfläche gesendet werden.
@@ -13,6 +13,7 @@ class MazeLogic(QObject):
     ducks_changed = pyqtSignal(int) # Signalisiert eine Änderung der Entenanzahl
     game_won = pyqtSignal() # Signalisiert, dass das Spiel gewonnen wurde
     game_lost = pyqtSignal() # Signalisiert, dass das Spiel verloren wurde
+    message_display_requested = pyqtSignal(str) # Signal für temporäre Nachrichten im UI
 
     # Konstanten für das Punktesystem
     STARTING_SCORE = 50
@@ -22,11 +23,22 @@ class MazeLogic(QObject):
     EXIT_BONUS = 250
     LOSS_THRESHOLD = -100
 
+    # Belohnungswerte für die KI (angepasst für bessere Lernkurve)
+    REWARD_STEP = -0.01 # Sehr kleiner Abzug pro Schritt, damit die KI mehr explorieren kann
+    REWARD_WALL_HIT = -10.0 # Hoher Abzug für Wandkollision
+    REWARD_KEY_COLLECTED = 50.0 # Hohe Belohnung für Schlüssel
+    REWARD_DUCK_COLLECTED_BASE = 10.0 # Hohe Belohnung für Enten
+    REWARD_EXIT_SUCCESS = 1000.0 # Sehr hohe Belohnung für erfolgreichen Abschluss
+    REWARD_EXIT_NO_KEY = -500.0 # Hoher Abzug für Erreichen des Ziels ohne Schlüssel
+    REWARD_GAME_LOST = -1000.0 # Sehr hoher Abzug für Spielverlust (Erreichen des LOSS_THRESHOLD)
+    REWARD_REVISIT_CELL = -5.0 # Deutlich höherer Abzug für das erneute Besuchen einer Zelle
+
     def __init__(self):
         super().__init__()
         # Initialisiere die grundlegenden Spielvariablen
         self.maze = [] # Repräsentation des Labyrinths (Liste von Listen von Zeichen)
         self.player_pos = {'x': 0, 'y': 0} # Aktuelle Position des Spielers
+        self.start_pos = {'x': 0, 'y': 0} # Speichert die Startposition
         self.collected_keys = set() # Set der gesammelten Schlüssel (z.B. 'key-ruby')
         self.total_keys = 3 # Wir haben immer 3 spezifische Schlüssel (Diamond, Ruby, Saphire)
         self.collected_ducks = 0 # Anzahl der gesammelten Enten
@@ -36,6 +48,8 @@ class MazeLogic(QObject):
         self.current_score = self.STARTING_SCORE # Aktueller Punktestand, initialisiert mit Startpunkten
         self.required_exit_key = None # Der Schlüssel, der zum Öffnen der Tür benötigt wird
         self.is_ai_controlled = False # Flag, ob das Spiel von der KI gesteuert wird
+        self.original_maze_layout = [] # Speichert das ursprüngliche Labyrinth-Layout für Resets
+        self.visited_positions_in_episode = set() # Set zum Speichern besuchter Positionen im aktuellen Durchgang
 
         # Definition der Enten-Typen und ihrer Werte
         self.duck_types = {
@@ -52,6 +66,23 @@ class MazeLogic(QObject):
             'key-saphire': {'char': 'A'}, # 'A' für Saphire Key
             'key-diamond': {'char': 'I'}, # 'I' für Diamond Key
         }
+
+        # Mapping von Labyrinthzeichen zu numerischen Werten für die KI-Beobachtung
+        self.char_to_numeric_map = {
+            'W': -1.0,  # Wand
+            ' ': 0.0,   # Leerer Pfad
+            'S': 0.5,   # Spieler (kann auch 0.0 sein, da Position bekannt ist)
+            'E': 1.0,   # Ende/Ziel
+            'U': 0.8,   # Rubin-Schlüssel
+            'A': 0.8,   # Saphir-Schlüssel
+            'I': 0.8,   # Diamant-Schlüssel
+            'G': 0.3,   # Gold-Ente
+            'P': 0.3,   # Pink-Ente
+            'R': 0.3,   # Rote Ente
+            'F': 0.3,   # Grüne Ente
+            'B': 0.3,   # Blaue Ente
+        }
+        self.vision_radius = 2 # Die KI "sieht" ein 5x5-Feld um sich herum
 
     def load_maze_from_file(self, filepath):
         """
@@ -112,14 +143,19 @@ class MazeLogic(QObject):
             print("Fehler: Endpunkt 'E' nicht im Labyrinth gefunden. Lade nicht.")
             return False
 
+        # Speichere das ursprüngliche Labyrinth-Layout
+        self.original_maze_layout = [row[:] for row in temp_maze]
+        
         # Setze Labyrinth und Spielzustand zurück
         self.maze = [row[:] for row in temp_maze] # Tiefe Kopie des Labyrinths
         self.player_pos = {'x': player_start_x, 'y': player_start_y}
+        self.start_pos = {'x': player_start_x, 'y': player_start_y} # Speichere Startposition
         self.collected_keys.clear()
         self.collected_ducks = 0
         self.game_over = False
         self.end_time_bonus = 0
         self.current_score = self.STARTING_SCORE # Setze Punktestand auf Startwert
+        self.visited_positions_in_episode.clear() # Besuchte Positionen zurücksetzen
         
         # Wähle zufällig einen Schlüssel, der zum Öffnen der Tür benötigt wird
         self.required_exit_key = random.choice(list(self.key_types.keys()))
@@ -185,7 +221,7 @@ class MazeLogic(QObject):
                 elif cell_content in duck_char_to_name:
                     current_ducks_on_map += 1
 
-        # Wenn die Map bereits Elemente enthält, verwenden wir diese und platzieren keine neuen.
+        # Wenn die Map bereits Elemente enthält, verwenden wir diese und platziere keine neuen.
         if current_keys_on_map or current_ducks_on_map:
             print("Info: Labyrinth enthält bereits Schlüssel/Enten. Platziere keine neuen.")
             self.total_keys = len(current_keys_on_map) # Aktualisiere Gesamtschlüssel basierend auf der Map
@@ -222,6 +258,7 @@ class MazeLogic(QObject):
         max_ducks_flexible_from_cells = int(remaining_cells_for_ducks * 0.15) # z.B. 15% der freien Zellen
         
         # Die tatsächliche Obergrenze für random.randint
+        # Korrektur des Tippfehlers: 'remaining_cells_for_placement' zu 'remaining_cells_for_ducks'
         upper_bound_for_random = min(max_ducks_absolute, max_ducks_flexible_from_cells, remaining_cells_for_ducks)
         
         # Sicherstellen, dass die Untergrenze nicht höher als die Obergrenze ist
@@ -254,80 +291,100 @@ class MazeLogic(QObject):
     def move_player(self, dx, dy):
         """
         Bewegt den Spieler im Labyrinth und verarbeitet Kollisionen und das Sammeln von Gegenständen.
+        Gibt die Belohnung für diesen Zug und einen 'done'-Flag zurück.
         """
         if self.game_over:
-            return
+            return 0.0, True # Keine Belohnung, Spiel ist vorbei
 
         old_x, old_y = self.player_pos['x'], self.player_pos['y'] # Speichere alte Position
         new_x, new_y = old_x + dx, old_y + dy # Berechne neue Position
+        reward = self.REWARD_STEP # Standard-Belohnung (kleiner Abzug pro Schritt)
+        done = False # Flag, ob das Spiel beendet ist
 
         # Prüfe Grenzen des Labyrinths
         if not (0 <= new_x < len(self.maze[0]) and 0 <= new_y < len(self.maze)):
-            return
-
-        target_cell = self.maze[new_y][new_x]
-
-        if target_cell == 'W': # Wand
-            self.current_score -= self.WALL_HIT_PENALTY # Punkteabzug für Mauer
-            self.maze_updated.emit() # UI aktualisieren, um Punktestand zu zeigen
-            # Prüfe nach Punktabzug, ob Spiel verloren ist
+            reward = self.REWARD_WALL_HIT # Hoher Abzug für Wandkollision
+            self.current_score -= self.WALL_HIT_PENALTY
+            self.maze_updated.emit()
             if self.current_score <= self.LOSS_THRESHOLD:
                 self.game_over = True
                 self.game_lost.emit()
-            return # Keine Bewegung bei Wandkollision
+                done = True
+            return reward, done # Keine Bewegung bei Wandkollision
+
+        target_cell_char = self.maze[new_y][new_x] # Zeichen der Zielzelle
+
+        if target_cell_char == 'W': # Wand
+            reward = self.REWARD_WALL_HIT # Hoher Abzug für Wandkollision
+            self.current_score -= self.WALL_HIT_PENALTY
+            self.maze_updated.emit()
+            if self.current_score <= self.LOSS_THRESHOLD:
+                self.game_over = True
+                self.game_lost.emit()
+                done = True
+            return reward, done # Keine Bewegung bei Wandkollision
+
+        # Belohnung für das erneute Besuchen einer Zelle
+        if (new_y, new_x) in self.visited_positions_in_episode:
+            reward += self.REWARD_REVISIT_CELL
+            # print(f"DEBUG: Zelle ({new_x},{new_y}) erneut besucht. Belohnung: {reward}")
+
 
         # Gültige Bewegung: Punkteabzug pro Schritt
         self.current_score -= self.STEP_PENALTY
 
         # Aktualisiere das Labyrinth-Gitter: alte Position leeren, neue Position markieren
-        # WICHTIG: Überschreibe die alte Position nur, wenn sie nicht der Startpunkt ist
-        # oder wenn der Startpunkt nicht mehr der aktuelle Spieler ist.
-        # Da der Spieler immer das 'S' ist, wird die alte Position zu einem leeren Feld.
         self.maze[old_y][old_x] = ' ' 
         
         # Spielerposition aktualisieren
         self.player_pos['x'] = new_x
         self.player_pos['y'] = new_y
 
+        # Füge die neue Position zu den besuchten Zellen hinzu
+        self.visited_positions_in_episode.add((new_y, new_x))
+
         # Setze die neue Spielerposition im Labyrinth-Gitter
         self.maze[new_y][new_x] = 'S'
-
-
-        if target_cell == 'E': # Ende erreicht
-            # Überprüfe, ob der ZIEL-Schlüssel gesammelt wurde
-            if self.required_exit_key in self.collected_keys:
-                self.current_score += self.EXIT_BONUS # Punktebonus für Ziel
-                self.game_over = True
-                self.game_won.emit() # Signal, dass das Spiel gewonnen wurde
-            else:
-                # Meldung, welcher Schlüssel benötigt wird, aber das Spiel geht weiter
-                QMessageBox.information(None, "Ende erreicht", 
-                                        f"Du brauchst den '{self.required_exit_key.replace('key-', '').capitalize()}' Schlüssel, um die Tür zu öffnen!")
 
         # Prüfe, ob ein Schlüssel gesammelt wurde (dies muss NACH der Spielerbewegung erfolgen,
         # damit der Schlüssel auf der Zelle, die der Spieler betritt, erkannt wird)
         key_chars = {data['char']: name for name, data in self.key_types.items()}
-        if target_cell in key_chars:
-            collected_key_name = key_chars[target_cell]
+        if target_cell_char in key_chars:
+            collected_key_name = key_chars[target_cell_char]
             if collected_key_name not in self.collected_keys: # Nur sammeln, wenn noch nicht gesammelt
                 self.collected_keys.add(collected_key_name)
                 self.current_score += self.KEY_BONUS # Punktebonus für Schlüssel
-                # Der Schlüssel wird durch die Spielerposition überschrieben, daher keine separate Löschung hier
+                reward += self.REWARD_KEY_COLLECTED # Belohnung für Schlüssel
                 self.keys_changed.emit(len(self.collected_keys)) # UI aktualisieren
                 print(f"Schlüssel {collected_key_name} gesammelt. Insgesamt: {len(self.collected_keys)}")
 
         # Prüfe, ob eine Ente gesammelt wurde (dies muss NACH der Spielerbewegung erfolgen)
         duck_chars = {data['char']: name for name, data in self.duck_types.items()}
-        if target_cell in duck_chars:
-            collected_duck_name = duck_chars[target_cell]
+        if target_cell_char in duck_chars:
+            collected_duck_name = duck_chars[target_cell_char]
             duck_data = self.duck_types[collected_duck_name]
             
             self.current_score += duck_data['points'] # Punkte hinzufügen
             self.end_time_bonus += duck_data['time_bonus'] # Zeitbonus hinzufügen
             self.collected_ducks += 1 # Anzahl der gesammelten Enten erhöhen
-            # Die Ente wird durch die Spielerposition überschrieben, daher keine separate Löschung hier
+            reward += self.REWARD_DUCK_COLLECTED_BASE + (duck_data['time_bonus'] * 0.5) # Belohnung für Ente
             self.ducks_changed.emit(self.collected_ducks) # UI aktualisieren
             print(f"Ente gesammelt: {collected_duck_name}. Punkte: {self.current_score}, Zeitbonus: {self.end_time_bonus}s")
+
+        if target_cell_char == 'E': # Ende erreicht
+            if self.required_exit_key in self.collected_keys:
+                self.current_score += self.EXIT_BONUS
+                reward += self.REWARD_EXIT_SUCCESS # Hohe Belohnung für erfolgreichen Abschluss
+                self.game_over = True
+                self.game_won.emit()
+                done = True
+            else:
+                # Falscher Schlüssel: Tür verschwindet, Spiel geht weiter, negative Belohnung
+                reward += self.REWARD_EXIT_NO_KEY # Abzug für Erreichen des Ziels ohne Schlüssel
+                self.maze[new_y][new_x] = ' ' # Tür verschwindet optisch
+                self.message_display_requested.emit(f"Falscher Schlüssel! Benötigt: {self.required_exit_key.replace('key-', '').capitalize()}")
+                # game_over bleibt False, done bleibt False, damit das Spiel weitergeht
+                print(f"Falscher Schlüssel! Benötigt: {self.required_exit_key.replace('key-', '').capitalize()}")
 
         self.maze_updated.emit() # Signal, dass das Labyrinth neu gezeichnet werden muss (inkl. Punktestand)
 
@@ -335,6 +392,70 @@ class MazeLogic(QObject):
         if self.current_score <= self.LOSS_THRESHOLD:
             self.game_over = True
             self.game_lost.emit()
+            reward = self.REWARD_GAME_LOST # Sehr hoher Abzug für Spielverlust
+            done = True
+        
+        return reward, done
+
+    def get_state_representation(self):
+        """
+        Gibt eine numerische Repräsentation des Labyrinths um den Spieler zurück.
+        Dies ist der 'Zustand' für das neuronale Netzwerk.
+        """
+        height = len(self.maze)
+        width = len(self.maze[0])
+        p_x, p_y = self.player_pos['x'], self.player_pos['y']
+        
+        state_list = []
+        for r_offset in range(-self.vision_radius, self.vision_radius + 1):
+            for c_offset in range(-self.vision_radius, self.vision_radius + 1):
+                cell_x, cell_y = p_x + c_offset, p_y + r_offset
+                
+                if 0 <= cell_x < width and 0 <= cell_y < height:
+                    cell_char = self.maze[cell_y][cell_x]
+                    # Wenn die Zelle der Spieler selbst ist, verwenden wir einen spezifischen Wert
+                    if r_offset == 0 and c_offset == 0:
+                        state_list.append(self.char_to_numeric_map['S'])
+                    else:
+                        state_list.append(self.char_to_numeric_map.get(cell_char, 0.0)) # Standardwert 0.0 für Unbekannt
+                else:
+                    state_list.append(self.char_to_numeric_map['W']) # Außerhalb des Labyrinths als Wand behandeln
+        return state_list
+
+    def reset_game_for_ai_training(self):
+        """
+        Setzt das Spiel für einen neuen KI-Trainingsdurchgang zurück,
+        ohne die Map neu zu laden.
+        """
+        print("DEBUG: Spiel für KI-Training zurückgesetzt.")
+        # Labyrinth auf den ursprünglichen Zustand zurücksetzen
+        self.maze = [row[:] for row in self.original_maze_layout]
+        
+        # Spielerposition zurücksetzen
+        self.player_pos = {'x': self.start_pos['x'], 'y': self.start_pos['y']}
+        self.maze[self.player_pos['y']][self.player_pos['x']] = 'S' # Spieler am Startpunkt setzen
+
+        # Gesammelte Gegenstände und Boni zurücksetzen
+        self.collected_keys.clear()
+        self.collected_ducks = 0
+        self.end_time_bonus = 0
+        self.current_score = self.STARTING_SCORE
+        self.game_over = False
+        self.visited_positions_in_episode.clear() # Besuchte Positionen zurücksetzen
+
+        # Wähle zufällig einen NEUEN Schlüssel für diesen Durchgang
+        self.required_exit_key = random.choice(list(self.key_types.keys()))
+        print(f"DEBUG: Neuer benötigter Schlüssel für KI-Durchgang: '{self.required_exit_key}'")
+
+        # Dynamische Elemente neu platzieren
+        self._place_dynamic_elements()
+
+        # UI-Signale senden
+        self.keys_changed.emit(len(self.collected_keys))
+        self.ducks_changed.emit(self.collected_ducks)
+        self.maze_updated.emit() # Labyrinth neu zeichnen
+        print("DEBUG: MazeLogic Reset abgeschlossen.")
+
 
     def get_maze_data(self):
         """Gibt die aktuelle Labyrinthdaten zurück."""
@@ -342,10 +463,6 @@ class MazeLogic(QObject):
 
     def get_player_pos(self):
         """Gibt die aktuelle Spielerposition zurück."""
-        # Da die Spielerposition jetzt im Maze-Gitter selbst als 'S' ist,
-        # könnten wir diese Methode anpassen, um die 'S'-Position zu finden.
-        # Für die aktuelle Implementierung, die self.player_pos verwendet,
-        # ist dies jedoch weiterhin korrekt.
         return self.player_pos
 
     def get_collected_keys_count(self):

@@ -1,3 +1,4 @@
+
 # ui/main_window.py
 # Dies ist das Hauptfenster der Anwendung, das die UI-Elemente verwaltet.
 
@@ -17,7 +18,7 @@ from datetime import datetime
 from game.maze_logic import MazeLogic
 from ui.game_board_widget import GameBoardWidget
 from ui.maze_generator import MazeGenerator
-from ai.agent import Agent
+from ai.agent import Agent # Import des KI-Agenten
 
 # --- Benutzerdefinierter Dialog für die Labyrinthgenerierung ---
 class MazeGenerationDialog(QDialog):
@@ -71,15 +72,21 @@ class MainWindow(QMainWindow):
         # Das Spielbrett-Widget (wird die Labyrinth-Grafik anzeigen)
         self.game_board_widget = GameBoardWidget(self.maze_logic)
 
-        # Timer für die Spielzeit
+        # Timer für die Spielzeit (für manuelle Spiele)
         self.timer = QTimer(self)
         self.game_time_seconds = 0
 
-        # KI-Agent und KI-Timer
-        self.agent = Agent(self.maze_logic)
+        # KI-Agent und KI-Timer (für AI-Spiele/Training)
+        self.agent = Agent(self.maze_logic) # Agent-Instanz erstellen
+        self.agent.load_model() # Modell beim Start automatisch laden
         self.ai_timer = QTimer(self)
         self.ai_timer.timeout.connect(self.ai_make_move)
-        self.ai_move_interval = 200 # Standard-Bewegungsintervall in ms (z.B. 200ms)
+        self.ai_move_interval = 20 # Standard-Bewegungsintervall in ms (schneller für KI-Training)
+        self.current_episode = 0 # Zähler für KI-Episoden
+
+        # Variablen zum Speichern des letzten KI-Zugs und dessen Ergebnis
+        self.last_ai_move_vector = None
+        self.last_ai_move_resulted_in_wall_hit = False
 
         # Initialisiere die Benutzeroberfläche (Startbildschirm und Spielbildschirm)
         self.init_ui()
@@ -106,6 +113,7 @@ class MainWindow(QMainWindow):
         self.maze_logic.ducks_changed.connect(self.update_reward_display)
         self.maze_logic.game_won.connect(self.handle_game_won)
         self.maze_logic.game_lost.connect(self.handle_game_lost)
+        self.maze_logic.message_display_requested.connect(self.display_temp_message) # Verbindung für Nachrichten
         self.timer.timeout.connect(self.update_timer)
 
 
@@ -181,12 +189,17 @@ class MainWindow(QMainWindow):
         self.reward_count_label = QLabel("Enten: 0/0")
         self.timer_label = QLabel("Zeit: 00:00")
         self.score_label = QLabel("Punkte: 0")
+        self.ai_info_label = QLabel("KI-Episode: N/A | Epsilon: N/A") # Für KI-Infos
+        self.status_message_label = QLabel("") # Label für temporäre Nachrichten
+        self.status_message_label.setStyleSheet("color: red; font-weight: bold;") # Optional: Stil für Nachrichten
 
         stats_layout.addWidget(self.key_count_label)
         stats_layout.addWidget(self.reward_count_label)
         stats_layout.addWidget(self.timer_label)
         stats_layout.addWidget(self.score_label)
+        stats_layout.addWidget(self.ai_info_label) # Füge KI-Info-Label hinzu
         stats_layout.addStretch(1) # Schiebt Labels nach links
+        stats_layout.addWidget(self.status_message_label) # Füge Status-Nachrichten-Label hinzu
 
         left_section_layout.addLayout(stats_layout)
         
@@ -202,6 +215,11 @@ class MainWindow(QMainWindow):
         self.back_to_menu_button = QPushButton("Zurück zum Menü")
         self.back_to_menu_button.clicked.connect(self.show_start_screen)
         right_buttons_layout.addWidget(self.back_to_menu_button)
+
+        self.restart_ai_episode_button = QPushButton("Neuer Durchgang (KI)") # Restart-Button
+        self.restart_ai_episode_button.clicked.connect(self.start_new_ai_episode)
+        self.restart_ai_episode_button.hide() # Zunächst versteckt
+        right_buttons_layout.addWidget(self.restart_ai_episode_button)
 
         self.learn_ai_button = QPushButton("AI lernen (noch nicht implementiert)")
         self.learn_ai_button.setEnabled(False) # Deaktiviert
@@ -262,6 +280,12 @@ class MainWindow(QMainWindow):
         self.maze_logic.is_ai_controlled = False # AI-Steuerung deaktivieren
         self.maze_logic.maze = [] # Leert das Labyrinth, damit das Spielfeld 'sauber' ist
         self.maze_logic.maze_updated.emit() # Signalisiert dem GameBoardWidget, sich zu aktualisieren (leeres Feld)
+        
+        # Verstecke KI-spezifische Buttons
+        self.restart_ai_episode_button.hide()
+        self.ai_info_label.setText("KI-Episode: N/A | Epsilon: N/A") # KI-Info zurücksetzen
+        self.status_message_label.setText("") # Nachrichten-Label leeren
+
 
     def show_game_screen(self):
         """
@@ -322,7 +346,7 @@ class MainWindow(QMainWindow):
         filepath = os.path.join("assets", "maps", selected_file)
         
         self.maze_logic.is_ai_controlled = False # Wichtig: AI-Steuerung deaktivieren
-        print(f"DEBUG: start_selected_maze_game: is_ai_controlled = {self.maze_logic.is_ai_controlled}")
+        print(f"DEBUG: Manuelles Spiel gestartet. is_ai_controlled = {self.maze_logic.is_ai_controlled}")
         self.load_maze_and_start_game(filepath)
 
     def start_selected_maze_game_ai(self):
@@ -337,7 +361,7 @@ class MainWindow(QMainWindow):
         filepath = os.path.join("assets", "maps", selected_file)
         
         self.maze_logic.is_ai_controlled = True # Wichtig: AI-Steuerung aktivieren
-        print(f"DEBUG: start_selected_maze_game_ai: is_ai_controlled = {self.maze_logic.is_ai_controlled}")
+        print(f"DEBUG: KI-Spiel gestartet. is_ai_controlled = {self.maze_logic.is_ai_controlled}")
         self.load_maze_and_start_game(filepath)
 
 
@@ -351,18 +375,23 @@ class MainWindow(QMainWindow):
             self.show_game_screen() # Wechselt zur Spielansicht
             self.start_new_game() # Startet die Spiel-Logik (Timer etc.)
             
-            # Starte AI-Timer, wenn AI-gesteuert
+            # Zeige/Verstecke KI-spezifische Buttons
             if self.maze_logic.is_ai_controlled:
                 self.ai_timer.start(self.ai_move_interval)
                 self.game_board_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Deaktiviere Fokus für manuelle Eingabe
-                print("DEBUG: Fokus-Policy auf NoFocus gesetzt (KI-Steuerung).")
+                self.restart_ai_episode_button.show()
+                self.current_episode = 1 # Starte mit Episode 1
+                self.update_ai_info_display()
+                print("DEBUG: Fokus-Policy auf NoFocus gesetzt (KI-Steuerung). KI-Buttons sichtbar.")
             else:
                 self.ai_timer.stop() # Sicherstellen, dass der AI-Timer gestoppt ist
                 self.game_board_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus) # Aktiviere Fokus für manuelle Eingabe
                 self.game_board_widget.setFocus() # Setze Fokus für manuelle Steuerung
                 self.activateWindow() # Fenster aktivieren
                 self.raise_()         # Fenster in den Vordergrund bringen
-                print("DEBUG: Fokus-Policy auf StrongFocus gesetzt und Fokus gesetzt (manuelle Steuerung).")
+                self.restart_ai_episode_button.hide()
+                self.ai_info_label.setText("KI-Episode: N/A | Epsilon: N/A") # KI-Info zurücksetzen
+                print("DEBUG: Fokus-Policy auf StrongFocus gesetzt und Fokus gesetzt (manuelle Steuerung). KI-Buttons versteckt.")
 
         else:
             QMessageBox.critical(self, "Fehler", f"Konnte Labyrinth '{filepath}' nicht laden. Möglicherweise beschädigt oder ungültig.")
@@ -439,27 +468,73 @@ class MainWindow(QMainWindow):
 
     def ai_make_move(self):
         """
-        Lässt den KI-Agenten einen Zug machen.
+        Lässt den KI-Agenten einen Zug machen und führt einen Lernschritt aus.
         Wird vom ai_timer aufgerufen.
         """
-        print(f"DEBUG: ai_make_move called. is_game_over: {self.maze_logic.is_game_over()}, is_ai_controlled: {self.maze_logic.is_ai_controlled}")
         if self.maze_logic.is_game_over():
             self.ai_timer.stop()
             print("DEBUG: AI Timer gestoppt, Spiel vorbei.")
+            # Modell automatisch speichern, wenn der Durchgang beendet ist
+            self.agent.save_model() 
             return
 
-        # Nur erlauben, dass die KI einen Zug macht, wenn sie explizit KI-gesteuert ist
         if not self.maze_logic.is_ai_controlled:
             print("DEBUG: AI-Timer läuft, aber Spiel ist nicht KI-gesteuert. Stoppe AI-Timer.")
             self.ai_timer.stop()
             return
 
-        move_vector = self.agent.choose_action()
-        if move_vector:
-            dx, dy = move_vector
-            self.maze_logic.move_player(dx, dy)
-        else:
-            print("KI konnte keinen gültigen Zug wählen.")
+        # 1. Aktuellen Zustand erfassen
+        state = self.maze_logic.get_state_representation()
+        
+        # 2. Aktion wählen (epsilon-greedy), unter Berücksichtigung des letzten Zuges
+        chosen_move_vector = self.agent.choose_action(
+            state,
+            self.last_ai_move_resulted_in_wall_hit,
+            self.last_ai_move_vector
+        )
+
+        # 3. Aktion ausführen und Belohnung/neuen Zustand erhalten
+        reward, done = self.maze_logic.move_player(chosen_move_vector[0], chosen_move_vector[1])
+        
+        # Speichere den letzten Zug und ob er zu einem Wandtreffer führte
+        self.last_ai_move_vector = chosen_move_vector
+        self.last_ai_move_resulted_in_wall_hit = (reward == self.maze_logic.REWARD_WALL_HIT)
+
+        # 4. Neuen Zustand erfassen
+        next_state = self.maze_logic.get_state_representation()
+
+        # 5. Agent lernen lassen
+        loss = self.agent.learn(state, self.agent.get_action_index(chosen_move_vector[0], chosen_move_vector[1]), reward, next_state, done)
+        self.update_ai_info_display() # Aktualisiere KI-Infos im UI
+
+        if done:
+            self.ai_timer.stop()
+            print(f"DEBUG: KI-Durchgang {self.current_episode} beendet.")
+            # Modell automatisch speichern, wenn der Durchgang beendet ist
+            self.agent.save_model() 
+            # Hier keine QMessageBox, da die handle_game_won/lost dies bereits tun
+            # und das Fenster offen bleiben soll.
+
+
+    def start_new_ai_episode(self):
+        """
+        Startet einen neuen KI-Trainingsdurchgang auf der aktuellen Map.
+        """
+        print("DEBUG: Starte neuen KI-Trainingsdurchgang.")
+        self.current_episode += 1
+        self.maze_logic.reset_game_for_ai_training() # Setzt das Labyrinth zurück
+        self.game_time_seconds = 0 # Setzt die Zeit zurück
+        self.timer.start(1000) # Startet den Spielzeit-Timer
+        self.ai_timer.start(self.ai_move_interval) # Startet den KI-Bewegungs-Timer
+        self.update_ai_info_display() # Aktualisiere KI-Infos
+        self.update_key_display()
+        self.update_reward_display()
+        self.score_label.setText(f"Punkte: {self.maze_logic.get_current_score()}")
+        self.maze_logic.maze_updated.emit()
+
+        # Setze die letzten Zug-Informationen für den neuen Durchgang zurück
+        self.last_ai_move_vector = None
+        self.last_ai_move_resulted_in_wall_hit = False
 
 
     def update_key_display(self):
@@ -481,6 +556,18 @@ class MainWindow(QMainWindow):
         minutes = self.game_time_seconds // 60
         seconds = self.game_time_seconds % 60
         self.timer_label.setText(f"Zeit: {minutes:02d}:{seconds:02d}")
+
+    def update_ai_info_display(self):
+        """Aktualisiert die Anzeige der KI-Informationen im UI."""
+        self.ai_info_label.setText(f"KI-Episode: {self.current_episode} | Epsilon: {self.agent.epsilon:.4f}")
+
+    def display_temp_message(self, message):
+        """
+        Zeigt eine temporäre Nachricht im Status-Label an, die nach 3 Sekunden verschwindet.
+        """
+        self.status_message_label.setText(message)
+        QTimer.singleShot(3000, lambda: self.status_message_label.setText(""))
+
 
     def save_highscore(self, map_name, score, raw_time_seconds, time_bonus):
         """
@@ -579,7 +666,7 @@ class MainWindow(QMainWindow):
     def handle_game_won(self):
         """Wird aufgerufen, wenn das Spiel gewonnen wurde, zeigt eine Nachricht an und setzt das Spiel zurück."""
         self.timer.stop()
-        self.ai_timer.stop()
+        self.ai_timer.stop() # Stoppt den AI-Timer
         
         final_score = self.maze_logic.get_current_score()
         time_bonus = self.maze_logic.get_end_time_bonus()
@@ -603,18 +690,28 @@ class MainWindow(QMainWindow):
                                 f"Ursprüngliche Zeit: {raw_time_seconds // 60:02d}:{raw_time_seconds % 60:02d}\n"
                                 f"Zeitbonus durch Enten: {time_bonus} Sekunden\n"
                                 f"Angepasste Zeit: {final_minutes:02d}:{final_seconds:02d}")
-        self.maze_logic.game_over = True
-        self.show_start_screen()
+        
+        # Wenn KI gesteuert, bleibe auf dem Spielbildschirm und zeige Restart-Button
+        if self.maze_logic.is_ai_controlled:
+            self.restart_ai_episode_button.show()
+        else:
+            self.maze_logic.game_over = True # Nur für manuelle Spiele zurücksetzen
+            self.show_start_screen()
 
     def handle_game_lost(self):
         """Wird aufgerufen, wenn das Spiel verloren wurde (Punktestand unter -100)."""
         self.timer.stop()
-        self.ai_timer.stop()
+        self.ai_timer.stop() # Stoppt den AI-Timer
         
         final_score = self.maze_logic.get_current_score()
         QMessageBox.information(self, "Spiel verloren!",
                                 f"Dein Punktestand ist unter {self.maze_logic.LOSS_THRESHOLD} gefallen!\n"
                                 f"Endgültiger Score: {final_score} Punkte.\n"
                                 f"Versuche es noch einmal!")
-        self.maze_logic.game_over = True
-        self.show_start_screen()
+        
+        # Wenn KI gesteuert, bleibe auf dem Spielbildschirm und zeige Restart-Button
+        if self.maze_logic.is_ai_controlled:
+            self.restart_ai_episode_button.show()
+        else:
+            self.maze_logic.game_over = True # Nur für manuelle Spiele zurücksetzen
+            self.show_start_screen()

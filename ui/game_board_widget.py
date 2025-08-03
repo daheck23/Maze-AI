@@ -3,8 +3,8 @@
 
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QPixmap, QColor
-from PyQt6.QtCore import Qt, QRectF
-import os
+from PyQt6.QtCore import Qt, QRectF, QTimer 
+import os # NEU: Importiere das os-Modul
 
 class GameBoardWidget(QWidget):
     def __init__(self, maze_logic, parent=None):
@@ -12,7 +12,7 @@ class GameBoardWidget(QWidget):
         self.maze_logic = maze_logic # Referenz zur Spiellogik
         # Das FocusPolicy wird jetzt von MainWindow gesteuert, je nachdem, ob AI spielt
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
-        print(f"DEBUG: GameBoardWidget __init__: Initial FocusPolicy = {self.focusPolicy()}") # NEU: Debug-Print
+        print(f"DEBUG: GameBoardWidget __init__: Initial FocusPolicy = {self.focusPolicy()}")
 
         self.images = {} # Dictionary zum Speichern der geladenen Bilder
         self.load_images() # Lade alle benötigten Bilder beim Start
@@ -20,6 +20,9 @@ class GameBoardWidget(QWidget):
         # Verbinde das Signal von MazeLogic, um das Widget neu zu zeichnen,
         # wenn sich das Labyrinth oder der Spielerstatus ändert.
         self.maze_logic.maze_updated.connect(self.update)
+        
+        # Setze die Ränder auf 0, um sicherzustellen, dass das Widget den gesamten Platz nutzt
+        self.setContentsMargins(0, 0, 0, 0)
 
         # Zuordnung von Labyrinthzeichen zu Bild-Dateinamen
         self.char_to_image_map = {
@@ -69,25 +72,56 @@ class GameBoardWidget(QWidget):
         Zeichnet das Labyrinth, den Spieler und alle Elemente.
         """
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing) # Für glattere Linien
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform) # Für glattere Bildskalierung
+
         maze = self.maze_logic.get_maze_data() # Aktuelle Labyrinthdaten von MazeLogic
-        player_pos = self.maze_logic.get_player_pos() # Aktuelle Spielerposition
 
         if not maze or not maze[0]: # Prüfe, ob Labyrinthdaten vorhanden sind
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Kein Labyrinth geladen.")
             return
 
-        # Berechne die Größe jeder Zelle basierend auf der Widget-Größe und Labyrinth-Dimensionen
-        cell_width = self.width() // len(maze[0])
-        cell_height = self.height() // len(maze)
+        maze_width_cells = len(maze[0])
+        maze_height_cells = len(maze)
+
+        # Berechne die Größe jeder Zelle, um das gesamte Labyrinth passend und quadratisch darzustellen
+        available_width = self.width()
+        available_height = self.height()
+
+        # Debug-Ausgaben zur Diagnose des Skalierungsproblems
+        # print(f"DEBUG: paintEvent - Widget size: {available_width}x{available_height}")
+        # print(f"DEBUG: paintEvent - Maze size: {maze_width_cells}x{maze_height_cells}")
+
+        cell_size_by_width = available_width / maze_width_cells
+        cell_size_by_height = available_height / maze_height_cells
+
+        # Wähle die kleinere der beiden Seiten, um sicherzustellen, dass das gesamte Labyrinth passt
+        cell_size = min(cell_size_by_width, cell_size_by_height)
+        
+        # print(f"DEBUG: paintEvent - Calculated cell_size: {cell_size}")
+
+        # Berechne Offsets, um das Labyrinth im Widget zu zentrieren
+        total_maze_pixel_width = maze_width_cells * cell_size
+        total_maze_pixel_height = maze_height_cells * cell_size
+
+        start_x = (available_width - total_maze_pixel_width) / 2
+        start_y = (available_height - total_maze_pixel_height) / 2
+
+        # Debug-Ausgaben für Zentrierung
+        # print(f"DEBUG: paintEvent - Start X: {start_x}, Start Y: {start_y}")
+        # print(f"DEBUG: paintEvent - Total Maze Pixel Size: {total_maze_pixel_width}x{total_maze_pixel_height}")
 
         # Durchlaufe jede Zelle des Labyrinths und zeichne sie
         for r_idx, row in enumerate(maze):
             for c_idx, cell in enumerate(row):
+                x = start_x + c_idx * cell_size
+                y = start_y + r_idx * cell_size
+
                 # Zeichne zuerst den Hintergrund der Zelle (Wand oder Pfad)
                 if cell == 'W':
-                    painter.fillRect(c_idx * cell_width, r_idx * cell_height, cell_width, cell_height, QColor('gray'))
+                    painter.fillRect(int(x), int(y), int(cell_size), int(cell_size), QColor('gray'))
                 else: # Pfad oder ein Element darauf
-                    painter.fillRect(c_idx * cell_width, r_idx * cell_height, cell_width, cell_height, QColor('white'))
+                    painter.fillRect(int(x), int(y), int(cell_size), int(cell_size), QColor('white'))
 
                 target_image = None
                 # Finde den passenden Bilddateinamen für das aktuelle Labyrinthzeichen
@@ -97,27 +131,32 @@ class GameBoardWidget(QWidget):
                 
                 # Wenn ein Bild gefunden wurde, zeichne es skaliert und zentriert in der Zelle
                 if target_image:
-                    scaled_image = target_image.scaled(cell_width, cell_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                    x_offset = (cell_width - scaled_image.width()) // 2
-                    y_offset = (cell_height - scaled_image.height()) // 2
-                    painter.drawPixmap(c_idx * cell_width + x_offset, r_idx * cell_height + y_offset, scaled_image)
+                    scaled_image = target_image.scaled(int(cell_size), int(cell_size), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    x_offset = (int(cell_size) - scaled_image.width()) // 2
+                    y_offset = (int(cell_size) - scaled_image.height()) // 2
+                    painter.drawPixmap(int(x + x_offset), int(y + y_offset), scaled_image)
                 
                 # Der Spieler wird durch das 'S'-Zeichen und das 'car.png'-Bild repräsentiert.
                 # Eine separate Zeichnung ist hier nicht nötig, da 'S' bereits gemappt ist.
                 pass 
 
+        # Debug-Rahmen um das gezeichnete Labyrinth
+        painter.setPen(QColor('blue'))
+        painter.drawRect(int(start_x), int(start_y), int(total_maze_pixel_width), int(total_maze_pixel_height))
+
+
     def keyPressEvent(self, event):
         """
         Behandelt Tastatureingaben für die Spielerbewegung.
         """
-        print(f"DEBUG: keyPressEvent triggered! Key: {event.key()} (is_ai_controlled: {self.maze_logic.is_ai_controlled})") # NEU: Debug-Print
+        # print(f"DEBUG: keyPressEvent triggered! Key: {event.key()} (is_ai_controlled: {self.maze_logic.is_ai_controlled})")
         
         if self.maze_logic.is_ai_controlled:
-            print("DEBUG: KI-Steuerung aktiv, Tastatureingabe ignoriert.")
+            # print("DEBUG: KI-Steuerung aktiv, Tastatureingabe ignoriert.")
             return
 
         if self.maze_logic.is_game_over():
-            print("DEBUG: Spiel vorbei, Tastatureingabe ignoriert.")
+            # print("DEBUG: Spiel vorbei, Tastatureingabe ignoriert.")
             return
 
         if event.key() == Qt.Key.Key_W:
@@ -137,3 +176,11 @@ class GameBoardWidget(QWidget):
         """
         print("DEBUG: GameBoardWidget hat den Fokus erhalten.")
         super().focusInEvent(event)
+
+    def resizeEvent(self, event):
+        """
+        Wird aufgerufen, wenn die Größe des Widgets geändert wird.
+        Erzwingt ein Neuzeichnen, um die Labyrinthskalierung anzupassen.
+        """
+        self.update() # Erzwingt ein Neuzeichnen
+        super().resizeEvent(event)
