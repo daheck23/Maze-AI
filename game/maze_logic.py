@@ -16,7 +16,7 @@ class MazeLogic(QObject):
     message_display_requested = pyqtSignal(str) # Signal für temporäre Nachrichten im UI
 
     # Konstanten für das Punktesystem
-    STARTING_SCORE = 100 # NEU: Startpunkte auf 100 gesetzt
+    STARTING_SCORE = 100 
     WALL_HIT_PENALTY = 5
     STEP_PENALTY = 1
     KEY_BONUS = 25
@@ -333,6 +333,10 @@ class MazeLogic(QObject):
         self.current_score -= self.STEP_PENALTY
 
         # Aktualisiere das Labyrinth-Gitter: alte Position leeren, neue Position markieren
+        # HINWEIS: Das alte Spielerzeichen 'S' wird immer durch ' ' ersetzt,
+        # auch wenn ein Objekt gesammelt wurde. Das Objekt wird dann im nächsten Schritt
+        # durch das neue Spielerzeichen 'S' übermalt.
+        # Dies ist die korrekte Logik, da der Spieler die Zelle verlässt.
         self.maze[old_y][old_x] = ' ' 
         
         # Spielerposition aktualisieren
@@ -341,9 +345,6 @@ class MazeLogic(QObject):
 
         # Füge die neue Position zu den besuchten Zellen hinzu
         self.visited_positions_in_episode.add((new_y, new_x))
-
-        # Setze die neue Spielerposition im Labyrinth-Gitter
-        self.maze[new_y][new_x] = 'S'
 
         # Prüfe, ob ein Schlüssel gesammelt wurde (dies muss NACH der Spielerbewegung erfolgen,
         # damit der Schlüssel auf der Zelle, die der Spieler betritt, erkannt wird)
@@ -370,20 +371,30 @@ class MazeLogic(QObject):
             self.ducks_changed.emit(self.collected_ducks) # UI aktualisieren
             print(f"Ente gesammelt: {collected_duck_name}. Punkte: {self.current_score}, Zeitbonus: {self.end_time_bonus}s")
 
-        if target_cell_char == 'E': # Ende erreicht
+        # Setze die neue Spielerposition im Labyrinth-Gitter
+        # Dies geschieht ZULETZT, damit der Spieler über gesammelten Gegenständen liegt.
+        # Wenn die Zielzelle eine Tür ist, wird sie nur dann durch 'S' ersetzt, wenn der richtige Schlüssel da ist.
+        if target_cell_char == 'E': # Ende erreicht (Tür)
             if self.required_exit_key in self.collected_keys:
                 self.current_score += self.EXIT_BONUS
                 reward += self.REWARD_EXIT_SUCCESS # Hohe Belohnung für erfolgreichen Abschluss
                 self.game_over = True
                 self.game_won.emit()
                 done = True
+                # Tür verschwindet, da das Spiel gewonnen wurde
+                self.maze[new_y][new_x] = 'S' # Spieler steht auf dem ehemaligen Türfeld
             else:
-                # Falscher Schlüssel: Tür verschwindet, Spiel geht weiter, negative Belohnung
+                # Falscher Schlüssel: Tür bleibt sichtbar, Spiel geht weiter, negative Belohnung
                 reward += self.REWARD_EXIT_NO_KEY # Abzug für Erreichen des Ziels ohne Schlüssel
-                self.maze[new_y][new_x] = ' ' # Tür verschwindet optisch
+                # Die Tür bleibt als 'E' im Labyrinth-Gitter
+                self.maze[new_y][new_x] = 'S' # Spieler steht auf dem Türfeld
                 self.message_display_requested.emit(f"Falscher Schlüssel! Benötigt: {self.required_exit_key.replace('key-', '').capitalize()}")
-                # game_over bleibt False, done bleibt False, damit das Spiel weitergeht
                 print(f"Falscher Schlüssel! Benötigt: {self.required_exit_key.replace('key-', '').capitalize()}")
+                # game_over bleibt False, done bleibt False, damit das Spiel weitergeht
+        else:
+            # Normale Bewegung: Spieler auf neue Zelle setzen
+            self.maze[new_y][new_x] = 'S'
+
 
         self.maze_updated.emit() # Signal, dass das Labyrinth neu gezeichnet werden muss (inkl. Punktestand)
 
@@ -407,7 +418,7 @@ class MazeLogic(QObject):
         
         state_list = []
         for r_offset in range(-self.vision_radius, self.vision_radius + 1):
-            for c_offset in range(-self.vision_radius, self.vision_radius + 1):
+            for c_offset in range(-self.vision_radius, self.vision_offset + 1): # Korrektur: vision_offset zu vision_radius
                 cell_x, cell_y = p_x + c_offset, p_y + r_offset
                 
                 if 0 <= cell_x < width and 0 <= cell_y < height:
