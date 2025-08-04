@@ -1,4 +1,3 @@
-
 # ui/main_window.py
 # Dies ist das Hauptfenster der Anwendung, das die UI-Elemente verwaltet.
 
