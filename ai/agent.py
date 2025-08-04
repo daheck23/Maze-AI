@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
+from collections import deque # Für den Replay Buffer
 
 # Definition des Neuronalen Netzwerks (DQN)
 class QNetwork(nn.Module):
@@ -21,6 +22,27 @@ class QNetwork(nn.Module):
         x = self.relu(x)
         x = self.fc2(x)
         return x
+
+# NEU: Replay Buffer Klasse
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity) # deque ist effizient für Hinzufügen/Entfernen an Enden
+
+    def push(self, state, action, reward, next_state, done):
+        """Fügt eine neue Erfahrung zum Puffer hinzu."""
+        # Speichert die Aktion als Index, nicht als Tupel (dx, dy)
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        """Zieht einen zufälligen Batch von Erfahrungen aus dem Puffer."""
+        if len(self.buffer) < batch_size:
+            return [] # Nicht genug Erfahrungen für einen Batch
+        return random.sample(self.buffer, batch_size)
+
+    def __len__(self):
+        """Gibt die aktuelle Größe des Puffers zurück."""
+        return len(self.buffer)
+
 
 class Agent:
     def __init__(self, maze_logic, model_path="ai/q_network_model.pth"):
@@ -58,8 +80,14 @@ class Agent:
         # Hyperparameter für Reinforcement Learning (Q-Learning)
         self.gamma = 0.99  # Diskontierungsfaktor (bleibt hoch, um zukünftige Belohnungen zu berücksichtigen)
         self.epsilon = 1.0 # Startwert für Exploration (100% Exploration)
-        self.epsilon_decay = 0.995 # NEU: Epsilon-Abnahme pro Schritt/Episode (etwas schneller als 0.999)
+        self.epsilon_decay = 0.995 # Epsilon-Abnahme pro Schritt/Episode (etwas schneller als 0.999)
         self.epsilon_min = 0.05 # Minimaler Epsilon-Wert (mindestens 5% Exploration)
+
+        # NEU: Replay Buffer Initialisierung
+        self.replay_buffer = ReplayBuffer(capacity=10000) # Pufferkapazität
+        self.batch_size = 64 # Größe des Batches, der aus dem Puffer gezogen wird
+        self.target_update_frequency = 10 # Wie oft das Target-Netzwerk aktualisiert wird (in Lernschritten)
+        self.learn_step_counter = 0 # Zähler für Lernschritte
 
     def choose_action(self, state, last_move_resulted_in_wall_hit=False, last_move_vector=None):
         """
@@ -165,26 +193,38 @@ class Agent:
             next_state: Der Zustand NACH der Aktion.
             done: True, wenn der nächste Zustand ein Endzustand ist.
         """
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-        action_tensor = torch.tensor([action_idx], dtype=torch.long).unsqueeze(0)
-        reward_tensor = torch.tensor([reward], dtype=torch.float32).unsqueeze(0)
-        next_state_tensor = torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
-        done_tensor = torch.tensor([done], dtype=torch.bool).unsqueeze(0)
+        # NEU: Erfahrung zum Replay Buffer hinzufügen
+        self.replay_buffer.push(state, action_idx, reward, next_state, done)
+
+        # Nur lernen, wenn genügend Erfahrungen im Puffer sind
+        if len(self.replay_buffer) < self.batch_size:
+            return 0.0 # Kein Lernschritt, Verlust 0
+
+        # NEU: Batch von Erfahrungen aus dem Puffer sampeln
+        transitions = self.replay_buffer.sample(self.batch_size)
+        # Transponiere den Batch (Batch von (state, action, reward, next_state, done) zu (states, actions, rewards, next_states, dones))
+        batch_state, batch_action, batch_reward, batch_next_state, batch_done = zip(*transitions)
+
+        # Konvertiere zu PyTorch Tensoren
+        batch_state = torch.tensor(batch_state, dtype=torch.float32)
+        batch_action = torch.tensor(batch_action, dtype=torch.long).unsqueeze(1)
+        batch_reward = torch.tensor(batch_reward, dtype=torch.float32).unsqueeze(1)
+        batch_next_state = torch.tensor(batch_next_state, dtype=torch.float32)
+        batch_done = torch.tensor(batch_done, dtype=torch.bool).unsqueeze(1)
 
         # Berechne Q-Werte für den aktuellen Zustand (Q(s,a))
-        current_q_values = self.policy_net(state_tensor).gather(1, action_tensor)
+        current_q_values = self.policy_net(batch_state).gather(1, batch_action)
 
         # Berechne die maximalen Q-Werte für den nächsten Zustand (max Q(s',a'))
-        # Wenn der nächste Zustand ein Endzustand ist, ist der Ziel-Q-Wert nur die Belohnung
-        next_q_values = torch.zeros(1, dtype=torch.float32)
-        if not done:
-            next_q_values = self.target_net(next_state_tensor).max(1)[0].detach()
-        
+        # Setze next_q_values auf 0, wenn der nächste Zustand ein Endzustand ist (done)
+        next_q_values = self.target_net(batch_next_state).max(1)[0].detach().unsqueeze(1)
+        next_q_values[batch_done] = 0.0 # Wenn done ist, ist der Q-Wert des nächsten Zustands 0
+
         # Berechne den erwarteten Q-Wert (Ziel-Q-Wert)
-        expected_q_values = reward_tensor + (self.gamma * next_q_values)
+        expected_q_values = batch_reward + (self.gamma * next_q_values)
 
         # Berechne den Verlust und führe Backpropagation durch
-        loss = self.loss_fn(current_q_values, expected_q_values.unsqueeze(1))
+        loss = self.loss_fn(current_q_values, expected_q_values)
         
         self.optimizer.zero_grad()
         loss.backward()
@@ -197,9 +237,10 @@ class Agent:
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
         
-        # Aktualisiere das Target-Netzwerk (periodisch oder nach jedem Lernschritt)
-        # Für einfache Implementierung aktualisieren wir es hier nach jedem Schritt
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        # NEU: Aktualisiere das Target-Netzwerk periodisch
+        self.learn_step_counter += 1
+        if self.learn_step_counter % self.target_update_frequency == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
         
         return loss.item() # Gibt den Verlustwert zurück
 
