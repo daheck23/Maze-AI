@@ -16,7 +16,7 @@ class MazeLogic(QObject):
     message_display_requested = pyqtSignal(str) # Signal für temporäre Nachrichten im UI
 
     # Konstanten für das Punktesystem
-    STARTING_SCORE = 100
+    STARTING_SCORE = 100 # NEU: Startpunkte auf 100 gesetzt
     WALL_HIT_PENALTY = 5
     STEP_PENALTY = 1
     KEY_BONUS = 25
@@ -258,7 +258,6 @@ class MazeLogic(QObject):
         max_ducks_flexible_from_cells = int(remaining_cells_for_ducks * 0.15) # z.B. 15% der freien Zellen
         
         # Die tatsächliche Obergrenze für random.randint
-        # Korrektur des Tippfehlers: 'remaining_cells_for_placement' zu 'remaining_cells_for_ducks'
         upper_bound_for_random = min(max_ducks_absolute, max_ducks_flexible_from_cells, remaining_cells_for_ducks)
         
         # Sicherstellen, dass die Untergrenze nicht höher als die Obergrenze ist
