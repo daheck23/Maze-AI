@@ -16,7 +16,7 @@ class MazeLogic(QObject):
     message_display_requested = pyqtSignal(str) # Signal für temporäre Nachrichten im UI
 
     # Konstanten für das Punktesystem
-    STARTING_SCORE = 50
+    STARTING_SCORE = 100
     WALL_HIT_PENALTY = 5
     STEP_PENALTY = 1
     KEY_BONUS = 25
