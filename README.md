@@ -14,21 +14,20 @@ the ducks for the points and the keys are positioned randomly on the map
 
 Rewards:
 
-Start 100pts
-opening the door 250pts
-key found 50pts
-golden duck 50pts
-pink duck 25 pts and -5s
-red duck pts and -s
-green duck pts and -s
-ble duck pts and -s
-every step done -1pts
-hit the wall -pts
+* Start 100pts
+* opening the door 250pts
+* key found 50pts
+* golden duck 50pts and -5s
+* pink duck 25 pts and -4s
+* red duck 10pts and -3s
+* green duck 5pts and -1s
+* blue duck 1pts and -0s
+* every step done -1pts
+* hit the wall -5pts
 
-Game over -100pts
+* Game over -100pts
 
 Libraries used: 
 - Numpy
 - Torch
 - PyQt6
-
