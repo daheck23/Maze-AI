@@ -325,7 +325,7 @@ class MazeLogic(QObject):
 
         # Belohnung für das erneute Besuchen einer Zelle
         if (new_y, new_x) in self.visited_positions_in_episode:
-            reward += self.REWARD_REVISIT_CELL
+            reward += self.REWARD_REVISIT_CELL # HIER WIRD DIE STRAFE ANGEWENDET
             # print(f"DEBUG: Zelle ({new_x},{new_y}) erneut besucht. Belohnung: {reward}")
 
 
@@ -418,7 +418,8 @@ class MazeLogic(QObject):
         
         state_list = []
         for r_offset in range(-self.vision_radius, self.vision_radius + 1):
-            for c_offset in range(-self.vision_radius, self.vision_offset + 1): # Korrektur: vision_offset zu vision_radius
+            # HIER WURDE vision_offset ZU vision_radius KORRIGIERT
+            for c_offset in range(-self.vision_radius, self.vision_radius + 1): 
                 cell_x, cell_y = p_x + c_offset, p_y + r_offset
                 
                 if 0 <= cell_x < width and 0 <= cell_y < height:
