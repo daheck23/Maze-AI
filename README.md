@@ -4,7 +4,7 @@ MAZE-AI
 
 Little game in Python
 
-Generate xour random Maze
+Generate your random Maze
 
 Train your AI to find the right key to open door as fast you can and with the most points
 
