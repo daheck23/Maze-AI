@@ -31,3 +31,5 @@ Libraries used:
 - Numpy
 - Torch
 - PyQt6
+
+Updates are coming soon
