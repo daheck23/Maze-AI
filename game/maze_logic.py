@@ -31,7 +31,7 @@ class MazeLogic(QObject):
     REWARD_EXIT_SUCCESS = 1000.0 # Sehr hohe Belohnung für erfolgreichen Abschluss
     REWARD_EXIT_NO_KEY = -500.0 # Hoher Abzug für Erreichen des Ziels ohne Schlüssel
     REWARD_GAME_LOST = -1000.0 # Sehr hoher Abzug für Spielverlust (Erreichen des LOSS_THRESHOLD)
-    REWARD_REVISIT_CELL = -5.0 # Deutlich höherer Abzug für das erneute Besuchen einer Zelle
+    REWARD_REVISIT_CELL = -20.0 # Deutlich höherer Abzug für das erneute Besuchen einer Zelle
 
     def __init__(self):
         super().__init__()
